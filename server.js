@@ -13,14 +13,24 @@ app.use((req, res, next) => {
 });
 
 app.get('/proxy', (req, res) => {
-    const url = req.query.url;
-    if (!url) {
-        return res.status(400).send('Missing URL');
+    const targetUrl = req.query.url;
+    if (!targetUrl) {
+        return res.status(400).send('Error: URL parameter is required');
     }
-    request(url).pipe(res); // Forward the request to the target URL
+
+    // Forward the request and modify the response headers
+    request({ url: targetUrl, headers: { 'User-Agent': req.headers['user-agent'] } })
+        .on('response', (response) => {
+            delete response.headers['x-frame-options']; // Remove the X-Frame-Options header
+        })
+        .on('error', (error) => {
+            console.error('Error forwarding the request:', error);
+            res.status(500).send('Failed to fetch the requested resource.');
+        })
+        .pipe(res);
 });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-    console.log(`Proxy server running on port ${PORT}`);
+    console.log(`Proxy server is running on port ${PORT}`);
 });
