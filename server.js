@@ -19,24 +19,35 @@ app.get('/proxy', (req, res) => {
         return res.status(400).send('Error: URL parameter is required');
     }
 
-    if (!/^https?:\/\//i.test(targetUrl)) {
-        const lastDomain = req.headers['referer'] && new URL(req.headers['referer']).searchParams.get('url');
-        if (lastDomain) {
-            const domain = new URL(lastDomain).origin;
-            targetUrl = `${domain}${targetUrl}`;
+    try {
+        // Handle relative URLs by checking the "referer" header
+        if (!/^https?:\/\//i.test(targetUrl)) {
+            const referer = req.headers.referer;
+            if (referer) {
+                const refererUrl = new URL(referer);
+                const baseUrl = new URL(refererUrl.searchParams.get('url')).origin;
+                targetUrl = new URL(targetUrl, baseUrl).href;
+            } else {
+                throw new Error('Relative URL without base URL.');
+            }
         }
-    }
 
-    request({ url: targetUrl, headers: { 'User-Agent': req.headers['user-agent'] } })
-        .on('response', (response) => {
-            delete response.headers['x-frame-options'];
-            response.headers['Access-Control-Allow-Origin'] = '*';
-        })
-        .on('error', (error) => {
-            console.error('Error forwarding the request:', error);
-            res.status(500).send('Failed to fetch the requested resource.');
-        })
-        .pipe(res);
+        // Forward the request to the target URL
+        request({ url: targetUrl, headers: { 'User-Agent': req.headers['user-agent'] } })
+            .on('response', (response) => {
+                delete response.headers['x-frame-options'];
+                response.headers['Access-Control-Allow-Origin'] = '*';
+            })
+            .on('error', (error) => {
+                console.error('Error forwarding the request:', error);
+                res.status(500).send('Failed to fetch the requested resource.');
+            })
+            .pipe(res);
+
+    } catch (error) {
+        console.error('Error processing the URL:', error);
+        res.status(400).send('Invalid or unsupported URL.');
+    }
 });
 
 const PORT = process.env.PORT || 5000;
