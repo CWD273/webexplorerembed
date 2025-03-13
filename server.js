@@ -20,23 +20,26 @@ app.get('/proxy', (req, res) => {
     }
 
     try {
-        // Handle relative URLs by checking the "referer" header
+        // Handle relative URLs using the referer header as the base
         if (!/^https?:\/\//i.test(targetUrl)) {
             const referer = req.headers.referer;
             if (referer) {
                 const refererUrl = new URL(referer);
                 const baseUrl = new URL(refererUrl.searchParams.get('url')).origin;
-                targetUrl = new URL(targetUrl, baseUrl).href;
+                targetUrl = new URL(targetUrl, baseUrl).href; // Resolve the full URL
             } else {
-                throw new Error('Relative URL without base URL.');
+                throw new Error('Relative URL without a base URL.');
             }
         }
 
         // Forward the request to the target URL
-        request({ url: targetUrl, headers: { 'User-Agent': req.headers['user-agent'] } })
+        request({
+            url: targetUrl,
+            headers: { 'User-Agent': req.headers['user-agent'] }
+        })
             .on('response', (response) => {
                 delete response.headers['x-frame-options'];
-                response.headers['Access-Control-Allow-Origin'] = '*';
+                response.headers['Access-Control-Allow-Origin'] = '*'; // Ensure CORS headers
             })
             .on('error', (error) => {
                 console.error('Error forwarding the request:', error);
