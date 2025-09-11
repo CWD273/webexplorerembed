@@ -1,81 +1,141 @@
 <?php
-if (isset($_GET['url'])) {
-    $url = $_GET['url'];
-
-    // Validate the URL
-    if (filter_var($url, FILTER_VALIDATE_URL)) {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_HEADER, false);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        ]);
-
-        $response = curl_exec($ch);
-        $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-
-        if (curl_errno($ch)) {
-            http_response_code(500);
-            echo 'Error: ' . curl_error($ch);
-        } else {
-            // If content is HTML, rewrite URLs
-            if (strpos($contentType, 'text/html') !== false) {
-                $baseUrl = $url;
-                $dom = new DOMDocument();
-
-                // Suppress warnings due to malformed HTML
-                @$dom->loadHTML($response);
-
-                $tags = [
-                    'a'      => 'href',
-                    'img'    => 'src',
-                    'link'   => 'href',
-                    'script' => 'src',
-                    'form'   => 'action'
-                ];
-
-                foreach ($tags as $tag => $attribute) {
-                    $elements = $dom->getElementsByTagName($tag);
-                    foreach ($elements as $element) {
-                        $attrValue = $element->getAttribute($attribute);
-                        if (!$attrValue) continue;
-
-                        // Convert to absolute URL
-                        $absoluteUrl = resolveUrl($baseUrl, $attrValue);
-                        if ($absoluteUrl) {
-                            // Re-route through proxy
-                            $proxiedUrl = 'index.php?url=' . urlencode($absoluteUrl);
-                            $element->setAttribute($attribute, $proxiedUrl);
-                        }
-                    }
-                }
-
-                echo $dom->saveHTML();
-            } else {
-                // Serve non-HTML content (images, CSS, etc.) as-is
-                header("Content-Type: $contentType");
-                echo $response;
-            }
-        }
-        curl_close($ch);
-    } else {
-        http_response_code(400);
-        echo 'Invalid URL';
-    }
-} else {
+// === INPUT & VALIDATION ===
+if (!isset($_GET['url'])) {
     http_response_code(400);
-    echo 'URL parameter is missing';
+    exit('Missing "url" parameter.');
 }
 
-// Helper to resolve relative URLs
-function resolveUrl($base, $relative) {
-    // If already absolute
-    if (parse_url($relative, PHP_URL_SCHEME) !== null) {
-        return $relative;
+$url = $_GET['url'];
+if (!filter_var($url, FILTER_VALIDATE_URL)) {
+    http_response_code(400);
+    exit('Invalid URL.');
+}
+
+// === SECURITY: Prevent SSRF to internal addresses ===
+if (isPrivateIP($url)) {
+    http_response_code(403);
+    exit('Access to private IPs is forbidden.');
+}
+
+// === FETCH THE CONTENT ===
+$ch = curl_init();
+curl_setopt_array($ch, [
+    CURLOPT_URL => $url,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HEADER => false,
+    CURLOPT_HTTPHEADER => [
+        'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    ],
+]);
+$response = curl_exec($ch);
+$contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+
+if (curl_errno($ch)) {
+    http_response_code(500);
+    exit('cURL Error: ' . curl_error($ch));
+}
+curl_close($ch);
+
+// === HANDLE HTML CONTENT ===
+if (strpos($contentType, 'text/html') !== false) {
+    libxml_use_internal_errors(true);
+    $dom = new DOMDocument();
+    @$dom->loadHTML($response);
+
+    $tags = [
+        'a'       => 'href',
+        'img'     => 'src',
+        'link'    => 'href',
+        'script'  => 'src',
+        'form'    => 'action',
+        'iframe'  => 'src',
+        'meta'    => 'content'
+    ];
+
+    foreach ($tags as $tag => $attribute) {
+        foreach ($dom->getElementsByTagName($tag) as $element) {
+            $attrValue = $element->getAttribute($attribute);
+            if (!$attrValue) continue;
+
+            // Handle <meta http-equiv="refresh">
+            if ($tag === 'meta' && strtolower($element->getAttribute('http-equiv')) === 'refresh') {
+                if (preg_match('/url=([^;]+)/i', $attrValue, $matches)) {
+                    $resolved = resolveUrl($url, trim($matches[1]));
+                    $element->setAttribute($attribute, 'url=' . 'index.php?url=' . urlencode($resolved));
+                }
+                continue;
+            }
+
+            $resolved = resolveUrl($url, $attrValue);
+            if ($resolved) {
+                $proxied = 'index.php?url=' . urlencode($resolved);
+                $element->setAttribute($attribute, $proxied);
+            }
+        }
     }
 
-    // Resolve relative to base
-    return rtrim(dirname($base), '/') . '/' . ltrim($relative, '/');
+    // === INJECT JS TO REWRITE DYNAMIC LINKS ===
+    $script = <<<EOD
+<script>
+document.querySelectorAll('a, form').forEach(el => {
+    if (el.tagName.toLowerCase() === 'a' && el.href) {
+        el.href = 'index.php?url=' + encodeURIComponent(el.href);
+    } else if (el.tagName.toLowerCase() === 'form' && el.action) {
+        el.action = 'index.php?url=' + encodeURIComponent(el.action);
+    }
+});
+</script>
+EOD;
+
+    $html = $dom->saveHTML();
+    $html = str_ireplace('</body>', $script . '</body>', $html);
+
+    header("Content-Type: text/html; charset=UTF-8");
+    echo $html;
+} else {
+    // === NON-HTML: Serve as-is ===
+    header("Content-Type: $contentType");
+    echo $response;
+}
+
+// === HELPER: Resolve Relative URLs ===
+function resolveUrl($base, $relative) {
+    if (parse_url($relative, PHP_URL_SCHEME) !== null) {
+        return $relative; // Already absolute
+    }
+
+    // Convert to absolute using PHP's URL parsing
+    $baseParts = parse_url($base);
+    $baseScheme = $baseParts['scheme'] ?? 'http';
+    $baseHost = $baseParts['host'] ?? '';
+    $basePath = $baseParts['path'] ?? '/';
+
+    // Strip filename from base path
+    $basePath = preg_replace('#/[^/]*$#', '', $basePath);
+    $abs = $baseScheme . '://' . $baseHost . $basePath . '/' . ltrim($relative, '/');
+
+    // Normalize path
+    $parts = [];
+    foreach (explode('/', $abs) as $segment) {
+        if ($segment == '..') {
+            array_pop($parts);
+        } elseif ($segment !== '.' && $segment !== '') {
+            $parts[] = $segment;
+        }
+    }
+
+    return $baseScheme . '://' . $baseHost . '/' . implode('/', $parts);
+}
+
+// === HELPER: Prevent SSRF to private IPs ===
+function isPrivateIP($url) {
+    $host = parse_url($url, PHP_URL_HOST);
+    if (!$host) return true;
+
+    $ip = gethostbyname($host);
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        return false;
+    }
+    return true;
 }
