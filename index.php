@@ -11,7 +11,6 @@ if (!filter_var($url, FILTER_VALIDATE_URL)) {
     exit('Invalid URL.');
 }
 
-// === SECURITY: Prevent SSRF to internal addresses ===
 if (isPrivateIP($url)) {
     http_response_code(403);
     exit('Access to private IPs is forbidden.');
@@ -43,6 +42,11 @@ if (strpos($contentType, 'text/html') !== false) {
     $dom = new DOMDocument();
     @$dom->loadHTML($response);
 
+    // Remove <base> tags
+    foreach ($dom->getElementsByTagName('base') as $base) {
+        $base->parentNode->removeChild($base);
+    }
+
     $tags = [
         'a'       => 'href',
         'img'     => 'src',
@@ -58,7 +62,6 @@ if (strpos($contentType, 'text/html') !== false) {
             $attrValue = $element->getAttribute($attribute);
             if (!$attrValue) continue;
 
-            // Handle <meta http-equiv="refresh">
             if ($tag === 'meta' && strtolower($element->getAttribute('http-equiv')) === 'refresh') {
                 if (preg_match('/url=([^;]+)/i', $attrValue, $matches)) {
                     $resolved = resolveUrl($url, trim($matches[1]));
@@ -75,16 +78,39 @@ if (strpos($contentType, 'text/html') !== false) {
         }
     }
 
-    // === INJECT JS TO REWRITE DYNAMIC LINKS ===
+    // === INJECT JS TO REWRITE DYNAMIC LINKS & REQUESTS ===
     $script = <<<EOD
 <script>
-document.querySelectorAll('a, form').forEach(el => {
-    if (el.tagName.toLowerCase() === 'a' && el.href) {
-        el.href = 'index.php?url=' + encodeURIComponent(el.href);
-    } else if (el.tagName.toLowerCase() === 'form' && el.action) {
-        el.action = 'index.php?url=' + encodeURIComponent(el.action);
-    }
-});
+(function() {
+    const proxy = url => 'index.php?url=' + encodeURIComponent(url);
+
+    document.querySelectorAll('a, form').forEach(el => {
+        if (el.tagName.toLowerCase() === 'a' && el.href) {
+            el.href = proxy(el.href);
+        } else if (el.tagName.toLowerCase() === 'form' && el.action) {
+            el.action = proxy(el.action);
+        }
+    });
+
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+        if (typeof input === 'string') input = proxy(input);
+        else if (input.url) input.url = proxy(input.url);
+        return origFetch(input, init);
+    };
+
+    const origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        arguments[1] = proxy(url);
+        return origOpen.apply(this, arguments);
+    };
+
+    // Optional: Relax CSP (use with caution)
+    // const meta = document.createElement('meta');
+    // meta.httpEquiv = "Content-Security-Policy";
+    // meta.content = "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;";
+    // document.head.appendChild(meta);
+})();
 </script>
 EOD;
 
@@ -94,28 +120,27 @@ EOD;
     header("Content-Type: text/html; charset=UTF-8");
     echo $html;
 } else {
-    // === NON-HTML: Serve as-is ===
     header("Content-Type: $contentType");
     echo $response;
 }
 
-// === HELPER: Resolve Relative URLs ===
+// === HELPER FUNCTIONS ===
 function resolveUrl($base, $relative) {
+    if (strpos($relative, '//') === 0) {
+        $scheme = parse_url($base, PHP_URL_SCHEME) ?? 'http';
+        return $scheme . ':' . $relative;
+    }
     if (parse_url($relative, PHP_URL_SCHEME) !== null) {
-        return $relative; // Already absolute
+        return $relative;
     }
 
-    // Convert to absolute using PHP's URL parsing
     $baseParts = parse_url($base);
     $baseScheme = $baseParts['scheme'] ?? 'http';
     $baseHost = $baseParts['host'] ?? '';
     $basePath = $baseParts['path'] ?? '/';
-
-    // Strip filename from base path
     $basePath = preg_replace('#/[^/]*$#', '', $basePath);
     $abs = $baseScheme . '://' . $baseHost . $basePath . '/' . ltrim($relative, '/');
 
-    // Normalize path
     $parts = [];
     foreach (explode('/', $abs) as $segment) {
         if ($segment == '..') {
@@ -128,14 +153,10 @@ function resolveUrl($base, $relative) {
     return $baseScheme . '://' . $baseHost . '/' . implode('/', $parts);
 }
 
-// === HELPER: Prevent SSRF to private IPs ===
 function isPrivateIP($url) {
     $host = parse_url($url, PHP_URL_HOST);
     if (!$host) return true;
 
     $ip = gethostbyname($host);
-    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-        return false;
-    }
-    return true;
+    return !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
 }
