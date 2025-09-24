@@ -1,1 +1,12 @@
-npm install puppeteer express
+{
+  "name": "puppeteer-proxy",
+  "version": "1.0.0",
+  "main": "render.js",
+  "scripts": {
+    "start": "node render.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "puppeteer": "^21.3.0"
+  }
+}
