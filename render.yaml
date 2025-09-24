@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: puppeteer-proxy
+    env: node
+    plan: starter
+    region: oregon
+    buildCommand: npm install
+    startCommand: node render.js
+    autoDeploy: true
+    branch: main
+    repo: https://github.com/CWD273/webexplorerembed
+    envVars:
+      - key: NODE_ENV
+        value: production
+    ports:
+      - port: 3000
+        protocol: http
