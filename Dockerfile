@@ -1,13 +1,39 @@
-FROM php:7.4-apache
+FROM node:18-slim
 
-# Copy project files
-COPY . /var/www/html/
+# Install Chromium dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    ca-certificates \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    xdg-utils \
+    libgbm-dev \
+    libnss3 \
+    libxss1 \
+    libgtk-3-0 \
+    --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /var/www/html/
+# Create app directory
+WORKDIR /app
 
-# Enable mod_rewrite (optional, if needed)
-RUN a2enmod rewrite
+# Copy files
+COPY . .
 
-# Expose default Apache port
-EXPOSE 80
+# Install dependencies
+RUN npm install
+
+# Expose port
+EXPOSE 3000
+
+# Start the app
+CMD ["node", "render.js"]
+
