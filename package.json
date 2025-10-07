@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "render.js",
   "scripts": {
+    "build": "npx puppeteer browsers install chrome",
     "start": "node render.js"
   },
   "dependencies": {
