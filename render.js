@@ -168,15 +168,42 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
           }
         }
         
-        // Intercept all link clicks to ensure they go through proxy
+        // Intercept all link clicks
         document.addEventListener('click', function(e) {
-          const link = e.target.closest('a');
-          if (link && link.href) {
-            const href = link.getAttribute('href');
-            if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
-              e.preventDefault();
-              const proxiedUrl = resolveUrl(href);
+          let target = e.target;
+          
+          // Find the closest anchor tag
+          while (target && target.tagName !== 'A') {
+            target = target.parentElement;
+          }
+          
+          if (target && target.tagName === 'A') {
+            const href = target.getAttribute('href');
+            
+            // Skip special links
+            if (!href || href.startsWith('#') || href.startsWith('javascript:') || 
+                href.startsWith('mailto:') || href.startsWith('tel:')) {
+              return;
+            }
+            
+            // Check if it's already a proxied URL
+            if (href.includes('${proxyBaseUrl}/?url=')) {
+              // Let it navigate normally through the proxy
+              return;
+            }
+            
+            // Prevent default and send message to parent
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const proxiedUrl = resolveUrl(href);
+            
+            // Try to communicate with parent window
+            try {
               window.top.postMessage({ type: 'navigate', url: proxiedUrl }, '*');
+            } catch (err) {
+              // If postMessage fails, navigate directly
+              window.location.href = proxiedUrl;
             }
           }
         }, true);
@@ -185,11 +212,9 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
         document.addEventListener('submit', function(e) {
           const form = e.target;
           if (form.action) {
-            e.preventDefault();
             const action = form.getAttribute('action') || currentUrl;
             const proxiedAction = resolveUrl(action);
             form.action = proxiedAction;
-            form.submit();
           }
         }, true);
         
@@ -212,7 +237,7 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
           return originalFetch.call(this, url, ...args);
         };
         
-        // Handle dynamically created scripts
+        // Handle dynamically created elements
         const originalCreateElement = document.createElement;
         document.createElement = function(tagName) {
           const element = originalCreateElement.call(document, tagName);
@@ -227,25 +252,6 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
               }
               return originalSetAttribute.call(this, name, value);
             };
-            
-            // Also intercept direct property assignment
-            Object.defineProperty(element, 'src', {
-              set: function(value) {
-                originalSetAttribute.call(this, 'src', resolveUrl(value));
-              },
-              get: function() {
-                return this.getAttribute('src');
-              }
-            });
-            
-            Object.defineProperty(element, 'href', {
-              set: function(value) {
-                originalSetAttribute.call(this, 'href', resolveUrl(value));
-              },
-              get: function() {
-                return this.getAttribute('href');
-              }
-            });
           }
           
           return element;
@@ -258,23 +264,6 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
             url = resolveUrl(url);
           }
           return originalWindowOpen.call(this, url, ...args);
-        };
-        
-        // Override location changes
-        const originalPushState = history.pushState;
-        history.pushState = function(state, title, url) {
-          if (url) {
-            url = resolveUrl(url);
-          }
-          return originalPushState.call(this, state, title, url);
-        };
-        
-        const originalReplaceState = history.replaceState;
-        history.replaceState = function(state, title, url) {
-          if (url) {
-            url = resolveUrl(url);
-          }
-          return originalReplaceState.call(this, state, title, url);
         };
         
       })();
