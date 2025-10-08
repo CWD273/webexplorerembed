@@ -265,7 +265,7 @@ app.get('/', async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--disable-web-security', // Allow cross-origin requests
+        '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process'
       ]
     });
@@ -275,11 +275,8 @@ app.get('/', async (req, res) => {
     // Set user agent to avoid bot detection
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    // Enable JavaScript
-    await page.setJavaScriptEnabled(true);
-    
     await page.goto(targetUrl, { 
-      waitUntil: 'networkidle0', // Wait for all network activity
+      waitUntil: 'networkidle0',
       timeout: 30000 
     });
     
@@ -295,17 +292,6 @@ app.get('/', async (req, res) => {
     html = rewriteUrls(html, targetUrl, proxyBaseUrl);
     
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
-  } catch (err) {
-    console.error('Proxy error:', err);
-    res.status(500).send('Error: ' + err.message);
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));    await browser.close();
-    
-    res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch (err) {
     console.error('Proxy error:', err);
