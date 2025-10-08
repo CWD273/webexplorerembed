@@ -5,10 +5,17 @@ const app = express();
 // Add CORS middleware
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
 });
+
+// Parse POST body
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 // Helper function to get content type from URL
 function getContentType(url) {
@@ -38,7 +45,7 @@ function getContentType(url) {
 
 // Helper function to check if URL is likely a static resource
 function isStaticResource(url) {
-  const staticExtensions = ['.css', '.js', '.json', '.png', '.jpg', '.jpeg', '.gif', 
+  const staticExtensions = ['.css', '.png', '.jpg', '.jpeg', '.gif', 
     '.svg', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.webm', '.mp3', '.pdf'];
   return staticExtensions.some(ext => url.toLowerCase().includes(ext));
 }
@@ -135,13 +142,22 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
         const baseUrl = '${baseUrl}';
         const currentUrl = '${targetUrl}';
         
+        // Override document.domain to prevent cross-origin issues
+        try {
+          Object.defineProperty(document, 'domain', {
+            get: function() { return '${urlObj.hostname}'; },
+            set: function(v) { /* ignore */ }
+          });
+        } catch(e) {}
+        
         // Function to resolve relative URLs
         function resolveUrl(url) {
           if (!url) return url;
           
           // Skip special protocols
           if (url.startsWith('javascript:') || url.startsWith('mailto:') || 
-              url.startsWith('tel:') || url.startsWith('data:') || url.startsWith('#')) {
+              url.startsWith('tel:') || url.startsWith('data:') || url.startsWith('#') ||
+              url.startsWith('blob:') || url.startsWith('about:')) {
             return url;
           }
           
@@ -155,7 +171,7 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
             if (url.startsWith('http://') || url.startsWith('https://')) {
               fullUrl = url;
             } else if (url.startsWith('//')) {
-              fullUrl = window.location.protocol + url;
+              fullUrl = '${urlObj.protocol}' + url;
             } else if (url.startsWith('/')) {
               fullUrl = baseUrl + url;
             } else {
@@ -175,6 +191,7 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
           // Find the closest anchor tag
           while (target && target.tagName !== 'A') {
             target = target.parentElement;
+            if (!target || target === document.body) break;
           }
           
           if (target && target.tagName === 'A') {
@@ -188,7 +205,6 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
             
             // Check if it's already a proxied URL
             if (href.includes('${proxyBaseUrl}/?url=')) {
-              // Let it navigate normally through the proxy
               return;
             }
             
@@ -200,9 +216,12 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
             
             // Try to communicate with parent window
             try {
-              window.top.postMessage({ type: 'navigate', url: proxiedUrl }, '*');
+              if (window.top !== window.self) {
+                window.top.postMessage({ type: 'navigate', url: proxiedUrl }, '*');
+              } else {
+                window.location.href = proxiedUrl;
+              }
             } catch (err) {
-              // If postMessage fails, navigate directly
               window.location.href = proxiedUrl;
             }
           }
@@ -211,10 +230,24 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
         // Intercept form submissions
         document.addEventListener('submit', function(e) {
           const form = e.target;
-          if (form.action) {
+          if (form && form.action) {
+            e.preventDefault();
+            
             const action = form.getAttribute('action') || currentUrl;
             const proxiedAction = resolveUrl(action);
-            form.action = proxiedAction;
+            const method = (form.method || 'GET').toUpperCase();
+            
+            if (method === 'GET') {
+              // For GET, build query string and navigate
+              const formData = new FormData(form);
+              const params = new URLSearchParams(formData);
+              const separator = proxiedAction.includes('?') ? '&' : '?';
+              window.location.href = proxiedAction + separator + params.toString();
+            } else {
+              // For POST, use fetch
+              const formData = new FormData(form);
+              window.location.href = proxiedAction + '&' + new URLSearchParams(formData).toString();
+            }
           }
         }, true);
         
@@ -227,14 +260,14 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
         
         // Intercept fetch requests
         const originalFetch = window.fetch;
-        window.fetch = function(url, ...args) {
+        window.fetch = function(url, options = {}) {
           if (typeof url === 'string') {
             url = resolveUrl(url);
           } else if (url instanceof Request) {
             const resolvedUrl = resolveUrl(url.url);
             url = new Request(resolvedUrl, url);
           }
-          return originalFetch.call(this, url, ...args);
+          return originalFetch.call(this, url, options);
         };
         
         // Handle dynamically created elements
@@ -265,6 +298,32 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
           }
           return originalWindowOpen.call(this, url, ...args);
         };
+        
+        // Override location property setters
+        const originalLocation = window.location;
+        let locationHref = originalLocation.href;
+        
+        Object.defineProperty(window, 'location', {
+          get: function() {
+            return {
+              ...originalLocation,
+              get href() { return locationHref; },
+              set href(url) {
+                locationHref = url;
+                originalLocation.href = resolveUrl(url);
+              },
+              assign: function(url) {
+                originalLocation.assign(resolveUrl(url));
+              },
+              replace: function(url) {
+                originalLocation.replace(resolveUrl(url));
+              }
+            };
+          },
+          set: function(url) {
+            originalLocation.href = resolveUrl(url);
+          }
+        });
         
       })();
     </script>
@@ -309,8 +368,9 @@ function rewriteCss(css, targetUrl, proxyBaseUrl) {
   return css;
 }
 
-app.get('/', async (req, res) => {
-  const targetUrl = req.query.url;
+// Handle both GET and POST requests
+async function handleRequest(req, res) {
+  const targetUrl = req.query.url || req.body.url;
   if (!targetUrl) return res.status(400).send('Missing "url" parameter.');
   
   try {
@@ -319,7 +379,7 @@ app.get('/', async (req, res) => {
     const host = req.headers['x-forwarded-host'] || req.get('host');
     const proxyBaseUrl = `${protocol}://${host}`;
     
-    // Check if this is a static resource (CSS, JS, images, etc.)
+    // Check if this is a static resource (CSS, images, etc.)
     if (isStaticResource(targetUrl)) {
       // For static resources, just fetch and return them
       const https = require('https');
@@ -362,17 +422,29 @@ app.get('/', async (req, res) => {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-blink-features=AutomationControlled'
       ]
     });
     
     const page = await browser.newPage();
     
-    // Set user agent to avoid bot detection
+    // Set user agent and other properties to avoid detection
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
+    // Set extra headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    });
+    
+    // Remove webdriver property
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
+    
     await page.goto(targetUrl, { 
-      waitUntil: 'networkidle0',
+      waitUntil: 'networkidle2', // Changed back to networkidle2 for better compatibility
       timeout: 30000 
     });
     
@@ -388,7 +460,10 @@ app.get('/', async (req, res) => {
     console.error('Proxy error:', err);
     res.status(500).send('Error: ' + err.message);
   }
-});
+}
+
+app.get('/', handleRequest);
+app.post('/', handleRequest);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
