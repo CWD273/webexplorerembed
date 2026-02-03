@@ -184,7 +184,7 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
           }
         }
         
-        // Intercept all link clicks
+        // Intercept all link clicks - FIXED VERSION
         document.addEventListener('click', function(e) {
           let target = e.target;
           
@@ -205,25 +205,20 @@ function rewriteUrls(html, targetUrl, proxyBaseUrl) {
             
             // Check if it's already a proxied URL
             if (href.includes('${proxyBaseUrl}/?url=')) {
+              // Already proxied, allow default behavior
               return;
             }
             
-            // Prevent default and send message to parent
+            // Prevent default and navigate through proxy
             e.preventDefault();
             e.stopPropagation();
             
             const proxiedUrl = resolveUrl(href);
             
-            // Try to communicate with parent window
-            try {
-              if (window.top !== window.self) {
-                window.top.postMessage({ type: 'navigate', url: proxiedUrl }, '*');
-              } else {
-                window.location.href = proxiedUrl;
-              }
-            } catch (err) {
-              window.location.href = proxiedUrl;
-            }
+            // Navigate to the proxied URL directly (not through postMessage)
+            window.location.href = proxiedUrl;
+            
+            return false;
           }
         }, true);
         
@@ -444,7 +439,7 @@ async function handleRequest(req, res) {
     });
     
     await page.goto(targetUrl, { 
-      waitUntil: 'networkidle2', // Changed back to networkidle2 for better compatibility
+      waitUntil: 'networkidle2',
       timeout: 30000 
     });
     
